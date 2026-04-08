@@ -16,11 +16,14 @@
 
 """Utility modules for Skill Scanner."""
 
-from .file_utils import get_file_type, is_binary_file, read_file_safe
+from .file_utils import ReadFailure, TextReadResult, get_file_type, is_binary_file, read_file_safe, read_utf8_validated
 from .logging_utils import get_logger, setup_logger
 
 __all__ = [
+    "ReadFailure",
+    "TextReadResult",
     "read_file_safe",
+    "read_utf8_validated",
     "get_file_type",
     "is_binary_file",
     "setup_logger",

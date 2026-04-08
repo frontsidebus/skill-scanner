@@ -391,6 +391,37 @@ def test_partial_binary_null_after_valid_text(loader, tmp_path):
     assert helper.content is None
 
 
+def test_read_file_safe_returns_none_for_null_bytes(tmp_path):
+    """read_file_safe must return None for files containing null bytes."""
+    from skill_scanner.utils.file_utils import read_file_safe
+
+    f = tmp_path / "data.txt"
+    f.write_bytes(b"some text\x00more text")
+    assert read_file_safe(f) is None
+
+
+def test_read_file_safe_returns_none_for_non_utf8(tmp_path):
+    """read_file_safe must return None for non-UTF-8 files."""
+    from skill_scanner.utils.file_utils import read_file_safe
+
+    f = tmp_path / "data.txt"
+    f.write_bytes(b"\xe9\xe8\xe0")
+    assert read_file_safe(f) is None
+
+
+def test_read_utf8_validated_size_guard_without_full_read(tmp_path):
+    """Size guard must reject via stat() before reading into memory."""
+    from skill_scanner.utils.file_utils import ReadFailure, read_utf8_validated
+
+    f = tmp_path / "big.md"
+    f.write_text("x" * 2048, encoding="utf-8")
+
+    result = read_utf8_validated(f, max_size_bytes=1024)
+    assert result.failure is ReadFailure.OVERSIZED
+    assert result.content is None
+    assert not result.is_binary
+
+
 def test_referenced_files_no_false_the_py_from_english_prose(loader):
     """English 'from the …' / 'import the …' must not imply a local the.py."""
     body = "Read from the documentation for details.\n\nYou may import the module later.\n"

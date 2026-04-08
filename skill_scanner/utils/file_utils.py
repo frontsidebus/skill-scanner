@@ -18,11 +18,21 @@
 File utility functions.
 """
 
+import enum
 import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+class ReadFailure(enum.Enum):
+    """Why a text read did not produce content."""
+
+    UNREADABLE = "unreadable"
+    OVERSIZED = "oversized"
+    NULL_BYTES = "contains null bytes"
+    NOT_UTF8 = "not valid UTF-8"
 
 
 @dataclass
@@ -31,7 +41,17 @@ class TextReadResult:
 
     content: str | None
     is_binary: bool
-    reason: str | None = None
+    failure: ReadFailure | None = None
+    detail: str | None = None
+
+    @property
+    def reason(self) -> str | None:
+        """Human-readable reason string for logging/error messages."""
+        if self.failure is None:
+            return None
+        if self.detail:
+            return f"{self.failure.value}: {self.detail}"
+        return self.failure.value
 
 
 def read_utf8_validated(file_path: Path, *, max_size_bytes: int = 0) -> TextReadResult:
@@ -45,21 +65,41 @@ def read_utf8_validated(file_path: Path, *, max_size_bytes: int = 0) -> TextRead
     Returns:
         TextReadResult with content (if valid UTF-8 text) or binary flag.
     """
+    if max_size_bytes:
+        try:
+            size = file_path.stat().st_size
+        except OSError as e:
+            return TextReadResult(
+                content=None, is_binary=True,
+                failure=ReadFailure.UNREADABLE, detail=str(e),
+            )
+        if size > max_size_bytes:
+            return TextReadResult(
+                content=None, is_binary=False,
+                failure=ReadFailure.OVERSIZED,
+            )
+
     try:
         raw = file_path.read_bytes()
     except OSError as e:
-        return TextReadResult(content=None, is_binary=True, reason=f"unreadable: {e}")
-
-    if max_size_bytes and len(raw) > max_size_bytes:
-        return TextReadResult(content=None, is_binary=False, reason="exceeds size limit")
+        return TextReadResult(
+            content=None, is_binary=True,
+            failure=ReadFailure.UNREADABLE, detail=str(e),
+        )
 
     if b"\x00" in raw:
-        return TextReadResult(content=None, is_binary=True, reason="contains null bytes")
+        return TextReadResult(
+            content=None, is_binary=True,
+            failure=ReadFailure.NULL_BYTES,
+        )
 
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as e:
-        return TextReadResult(content=None, is_binary=True, reason=f"not valid UTF-8: {e}")
+        return TextReadResult(
+            content=None, is_binary=True,
+            failure=ReadFailure.NOT_UTF8, detail=str(e),
+        )
 
     return TextReadResult(content=text, is_binary=False)
 

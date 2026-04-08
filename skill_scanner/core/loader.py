@@ -25,7 +25,7 @@ from pathlib import Path
 
 import frontmatter
 
-from ..utils.file_utils import get_file_type, read_utf8_validated
+from ..utils.file_utils import ReadFailure, get_file_type, read_utf8_validated
 from .exceptions import SkillLoadError
 from .models import Skill, SkillFile, SkillManifest
 
@@ -155,19 +155,27 @@ class SkillLoader:
         # Validate that the primary file is readable UTF-8 before parsing.
         # A binary file (e.g. an executable renamed to .md) must not silently
         # become an empty skill — it should fail loudly even in lenient mode.
-        primary_result = read_utf8_validated(primary_md)
-        if primary_result.is_binary:
+        primary_result = read_utf8_validated(primary_md, max_size_bytes=self.max_file_size_bytes)
+        if primary_result.failure is ReadFailure.OVERSIZED:
+            raise SkillLoadError(
+                f"{primary_md.name} exceeds maximum size "
+                f"({self.max_file_size_bytes} bytes)"
+            )
+        if primary_result.is_binary or primary_result.content is None:
             raise SkillLoadError(
                 f"{primary_md.name} is not valid UTF-8 text ({primary_result.reason}); "
                 f"cannot use as skill metadata even in lenient mode"
             )
 
-        # Try to parse frontmatter from the primary file
+        # Try to parse frontmatter from the primary file, passing already-read
+        # content to avoid a redundant disk read.
         try:
-            manifest, body = self._parse_skill_md(primary_md, lenient=True)
+            manifest, body = self._parse_skill_md(
+                primary_md, lenient=True, _pre_validated_content=primary_result.content,
+            )
         except SkillLoadError:
             # Frontmatter parsing failed but content is valid text — use raw
-            body = primary_result.content or ""
+            body = primary_result.content
             manifest = SkillManifest(
                 name=skill_directory.name,
                 description="(no description)",
@@ -186,7 +194,13 @@ class SkillLoader:
 
         return primary_md, manifest, body
 
-    def _parse_skill_md(self, skill_md_path: Path, *, lenient: bool = False) -> tuple[SkillManifest, str]:
+    def _parse_skill_md(
+        self,
+        skill_md_path: Path,
+        *,
+        lenient: bool = False,
+        _pre_validated_content: str | None = None,
+    ) -> tuple[SkillManifest, str]:
         """
         Parse SKILL.md file with YAML frontmatter.
 
@@ -194,6 +208,8 @@ class SkillLoader:
             skill_md_path: Path to SKILL.md
             lenient: When True, fill missing fields with defaults instead of
                 raising ``SkillLoadError``.
+            _pre_validated_content: If the caller already validated and read the
+                file, pass the content here to avoid a redundant disk read.
 
         Returns:
             Tuple of (SkillManifest, instruction_body)
@@ -201,18 +217,21 @@ class SkillLoader:
         Raises:
             SkillLoadError: If parsing fails (strict mode only)
         """
-        result = read_utf8_validated(skill_md_path, max_size_bytes=self.max_file_size_bytes)
-        if result.reason == "exceeds size limit":
-            raise SkillLoadError(
-                f"{skill_md_path.name} exceeds maximum size "
-                f"({self.max_file_size_bytes} bytes)"
-            )
-        if result.is_binary or result.content is None:
-            raise SkillLoadError(
-                f"{skill_md_path.name} is not valid UTF-8 text ({result.reason}); "
-                f"skill metadata files must be valid UTF-8 text"
-            )
-        content = result.content
+        if _pre_validated_content is not None:
+            content = _pre_validated_content
+        else:
+            result = read_utf8_validated(skill_md_path, max_size_bytes=self.max_file_size_bytes)
+            if result.failure is ReadFailure.OVERSIZED:
+                raise SkillLoadError(
+                    f"{skill_md_path.name} exceeds maximum size "
+                    f"({self.max_file_size_bytes} bytes)"
+                )
+            if result.is_binary or result.content is None:
+                raise SkillLoadError(
+                    f"{skill_md_path.name} is not valid UTF-8 text ({result.reason}); "
+                    f"skill metadata files must be valid UTF-8 text"
+                )
+            content = result.content
 
         # Parse with python-frontmatter
         try:

@@ -24,6 +24,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from ..utils.file_utils import read_utf8_validated
+
 
 class Severity(str, Enum):
     """Severity levels for security findings."""
@@ -118,8 +120,6 @@ class SkillFile:
         file_type is updated accordingly.
         """
         if self.content is None and self.file_type != "binary" and self.path.exists():
-            from ..utils.file_utils import read_utf8_validated
-
             result = read_utf8_validated(self.path)
             if result.is_binary or result.content is None:
                 self.file_type = "binary"
