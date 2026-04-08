@@ -239,6 +239,69 @@ def test_codex_skills_directory_structure(loader, tmp_path):
     assert file_types["assets/template.txt"] == "other"
 
 
+def test_binary_skill_md_raises_error(loader, tmp_path):
+    """A SKILL.md that is actually a binary file must hard-fail, not silently parse."""
+    skill_dir = tmp_path / "binary-skill"
+    skill_dir.mkdir()
+
+    # Write a file with null bytes (binary content)
+    (skill_dir / "SKILL.md").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+
+    with pytest.raises(SkillLoadError, match="null bytes"):
+        loader.load_skill(skill_dir)
+
+
+def test_non_utf8_skill_md_raises_error(loader, tmp_path):
+    """A SKILL.md encoded in Latin-1 (not UTF-8) must hard-fail."""
+    skill_dir = tmp_path / "latin1-skill"
+    skill_dir.mkdir()
+
+    # Latin-1 encoded content with bytes invalid in UTF-8
+    latin1_content = "---\nname: café\ndescription: résumé\n---\n# Héllo\n".encode("latin-1")
+    (skill_dir / "SKILL.md").write_bytes(latin1_content)
+
+    with pytest.raises(SkillLoadError, match="not valid UTF-8"):
+        loader.load_skill(skill_dir)
+
+
+def test_binary_file_in_package_reclassified(loader, tmp_path):
+    """A .py file that is actually binary should be reclassified, not crash."""
+    skill_dir = tmp_path / "binary-file-skill"
+    skill_dir.mkdir()
+
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: test\ndescription: test skill\n---\n# Test\n",
+        encoding="utf-8",
+    )
+    # Write a .py file with null bytes
+    (skill_dir / "sneaky.py").write_bytes(b"import os\x00\x00\x00hidden payload")
+
+    skill = loader.load_skill(skill_dir)
+
+    sneaky = next(f for f in skill.files if f.relative_path == "sneaky.py")
+    assert sneaky.file_type == "binary"
+    assert sneaky.content is None
+
+
+def test_non_utf8_file_in_package_reclassified(loader, tmp_path):
+    """A non-UTF-8 text file in the package should be reclassified as binary."""
+    skill_dir = tmp_path / "non-utf8-file-skill"
+    skill_dir.mkdir()
+
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: test\ndescription: test skill\n---\n# Test\n",
+        encoding="utf-8",
+    )
+    # Write a .sh file with Latin-1 encoding
+    (skill_dir / "setup.sh").write_bytes(b"#!/bin/bash\necho '\xe9\xe8\xe0'\n")
+
+    skill = loader.load_skill(skill_dir)
+
+    setup = next(f for f in skill.files if f.relative_path == "setup.sh")
+    assert setup.file_type == "binary"
+    assert setup.content is None
+
+
 def test_referenced_files_no_false_the_py_from_english_prose(loader):
     """English 'from the …' / 'import the …' must not imply a local the.py."""
     body = "Read from the documentation for details.\n\nYou may import the module later.\n"

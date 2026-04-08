@@ -194,10 +194,23 @@ class SkillLoader:
             SkillLoadError: If parsing fails (strict mode only)
         """
         try:
-            with open(skill_md_path, encoding="utf-8") as f:
-                content = f.read()
-        except (OSError, UnicodeDecodeError) as e:
-            raise SkillLoadError(f"Failed to read SKILL.md: {e}")
+            raw = skill_md_path.read_bytes()
+        except OSError as e:
+            raise SkillLoadError(f"Failed to read {skill_md_path.name}: {e}")
+
+        if b"\x00" in raw:
+            raise SkillLoadError(
+                f"{skill_md_path.name} contains null bytes (binary content); "
+                f"skill metadata files must be valid UTF-8 text"
+            )
+
+        try:
+            content = raw.decode("utf-8")
+        except UnicodeDecodeError as e:
+            raise SkillLoadError(
+                f"{skill_md_path.name} is not valid UTF-8: {e}; "
+                f"skill metadata files must be valid UTF-8 text"
+            )
 
         # Parse with python-frontmatter
         try:
@@ -320,11 +333,27 @@ class SkillLoader:
             content = None
             if size_bytes < self.max_file_size_bytes and file_type != "binary":
                 try:
-                    with open(path, encoding="utf-8") as f:
-                        content = f.read()
-                except (OSError, UnicodeDecodeError):
-                    # Treat as binary if can't read as text
+                    raw_bytes = path.read_bytes()
+                except OSError:
                     file_type = "binary"
+                    raw_bytes = None
+
+                if raw_bytes is not None:
+                    if b"\x00" in raw_bytes:
+                        logger.warning(
+                            "File %s contains null bytes; reclassifying as binary",
+                            relative_path,
+                        )
+                        file_type = "binary"
+                    else:
+                        try:
+                            content = raw_bytes.decode("utf-8")
+                        except UnicodeDecodeError:
+                            logger.warning(
+                                "File %s is not valid UTF-8; reclassifying as binary",
+                                relative_path,
+                            )
+                            file_type = "binary"
 
             skill_file = SkillFile(
                 path=path,
