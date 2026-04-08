@@ -25,7 +25,7 @@ from pathlib import Path
 
 import frontmatter
 
-from ..utils.file_utils import get_file_type
+from ..utils.file_utils import get_file_type, read_utf8_validated
 from .exceptions import SkillLoadError
 from .models import Skill, SkillFile, SkillManifest
 
@@ -152,15 +152,22 @@ class SkillLoader:
         # Use the first .md file as the primary path
         primary_md = md_files[0]
 
+        # Validate that the primary file is readable UTF-8 before parsing.
+        # A binary file (e.g. an executable renamed to .md) must not silently
+        # become an empty skill — it should fail loudly even in lenient mode.
+        primary_result = read_utf8_validated(primary_md)
+        if primary_result.is_binary:
+            raise SkillLoadError(
+                f"{primary_md.name} is not valid UTF-8 text ({primary_result.reason}); "
+                f"cannot use as skill metadata even in lenient mode"
+            )
+
         # Try to parse frontmatter from the primary file
         try:
             manifest, body = self._parse_skill_md(primary_md, lenient=True)
         except SkillLoadError:
-            # If even lenient parsing fails, use raw content
-            try:
-                body = primary_md.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                body = ""
+            # Frontmatter parsing failed but content is valid text — use raw
+            body = primary_result.content or ""
             manifest = SkillManifest(
                 name=skill_directory.name,
                 description="(no description)",
@@ -169,10 +176,11 @@ class SkillLoader:
         # Append content from remaining .md files
         extra_bodies: list[str] = []
         for md_file in md_files[1:]:
-            try:
-                extra_bodies.append(md_file.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError):
-                continue
+            result = read_utf8_validated(md_file)
+            if result.content is not None:
+                extra_bodies.append(result.content)
+            else:
+                logger.warning("Skipping %s in lenient synthesis: %s", md_file.name, result.reason)
         if extra_bodies:
             body = body + "\n\n" + "\n\n".join(extra_bodies)
 
@@ -193,24 +201,18 @@ class SkillLoader:
         Raises:
             SkillLoadError: If parsing fails (strict mode only)
         """
-        try:
-            raw = skill_md_path.read_bytes()
-        except OSError as e:
-            raise SkillLoadError(f"Failed to read {skill_md_path.name}: {e}")
-
-        if b"\x00" in raw:
+        result = read_utf8_validated(skill_md_path, max_size_bytes=self.max_file_size_bytes)
+        if result.reason == "exceeds size limit":
             raise SkillLoadError(
-                f"{skill_md_path.name} contains null bytes (binary content); "
+                f"{skill_md_path.name} exceeds maximum size "
+                f"({self.max_file_size_bytes} bytes)"
+            )
+        if result.is_binary or result.content is None:
+            raise SkillLoadError(
+                f"{skill_md_path.name} is not valid UTF-8 text ({result.reason}); "
                 f"skill metadata files must be valid UTF-8 text"
             )
-
-        try:
-            content = raw.decode("utf-8")
-        except UnicodeDecodeError as e:
-            raise SkillLoadError(
-                f"{skill_md_path.name} is not valid UTF-8: {e}; "
-                f"skill metadata files must be valid UTF-8 text"
-            )
+        content = result.content
 
         # Parse with python-frontmatter
         try:
@@ -332,28 +334,16 @@ class SkillLoader:
             # Read content if not too large and not binary
             content = None
             if size_bytes < self.max_file_size_bytes and file_type != "binary":
-                try:
-                    raw_bytes = path.read_bytes()
-                except OSError:
+                text_result = read_utf8_validated(path)
+                if text_result.is_binary:
+                    logger.warning(
+                        "File %s failed UTF-8 validation (%s); reclassifying as binary",
+                        relative_path,
+                        text_result.reason,
+                    )
                     file_type = "binary"
-                    raw_bytes = None
-
-                if raw_bytes is not None:
-                    if b"\x00" in raw_bytes:
-                        logger.warning(
-                            "File %s contains null bytes; reclassifying as binary",
-                            relative_path,
-                        )
-                        file_type = "binary"
-                    else:
-                        try:
-                            content = raw_bytes.decode("utf-8")
-                        except UnicodeDecodeError:
-                            logger.warning(
-                                "File %s is not valid UTF-8; reclassifying as binary",
-                                relative_path,
-                            )
-                            file_type = "binary"
+                else:
+                    content = text_result.content
 
             skill_file = SkillFile(
                 path=path,

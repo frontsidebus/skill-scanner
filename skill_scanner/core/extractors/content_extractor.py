@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ...utils.file_utils import get_file_type
+from ...utils.file_utils import get_file_type, read_utf8_validated
 from ..models import Finding, Severity, SkillFile, ThreatCategory
 
 logger = logging.getLogger(__name__)
@@ -302,10 +302,11 @@ class ContentExtractor:
                     file_type = get_file_type(extracted_path)
                     content = None
                     if file_type != "binary":
-                        try:
-                            content = extracted_path.read_text(encoding="utf-8")
-                        except (UnicodeDecodeError, OSError):
+                        text_result = read_utf8_validated(extracted_path)
+                        if text_result.is_binary:
                             file_type = "binary"
+                        else:
+                            content = text_result.content
 
                     sf = SkillFile(
                         path=extracted_path,
@@ -420,10 +421,11 @@ class ContentExtractor:
                     file_type = get_file_type(extracted_path)
                     content = None
                     if file_type != "binary":
-                        try:
-                            content = extracted_path.read_text(encoding="utf-8")
-                        except (UnicodeDecodeError, OSError):
+                        text_result = read_utf8_validated(extracted_path)
+                        if text_result.is_binary:
                             file_type = "binary"
+                        else:
+                            content = text_result.content
 
                     sf = SkillFile(
                         path=extracted_path,

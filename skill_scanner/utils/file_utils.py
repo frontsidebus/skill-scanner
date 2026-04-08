@@ -18,7 +18,50 @@
 File utility functions.
 """
 
+import logging
+from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TextReadResult:
+    """Result of attempting to read a file as validated UTF-8 text."""
+
+    content: str | None
+    is_binary: bool
+    reason: str | None = None
+
+
+def read_utf8_validated(file_path: Path, *, max_size_bytes: int = 0) -> TextReadResult:
+    """Read a file as UTF-8 text with null-byte and encoding validation.
+
+    Args:
+        file_path: Path to file.
+        max_size_bytes: Skip reading if file exceeds this size.
+            0 means no limit.
+
+    Returns:
+        TextReadResult with content (if valid UTF-8 text) or binary flag.
+    """
+    try:
+        raw = file_path.read_bytes()
+    except OSError as e:
+        return TextReadResult(content=None, is_binary=True, reason=f"unreadable: {e}")
+
+    if max_size_bytes and len(raw) > max_size_bytes:
+        return TextReadResult(content=None, is_binary=False, reason="exceeds size limit")
+
+    if b"\x00" in raw:
+        return TextReadResult(content=None, is_binary=True, reason="contains null bytes")
+
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as e:
+        return TextReadResult(content=None, is_binary=True, reason=f"not valid UTF-8: {e}")
+
+    return TextReadResult(content=text, is_binary=False)
 
 
 def read_file_safe(file_path: Path, max_size_mb: int = 10) -> str | None:
@@ -30,19 +73,10 @@ def read_file_safe(file_path: Path, max_size_mb: int = 10) -> str | None:
         max_size_mb: Maximum file size in MB
 
     Returns:
-        File content or None if unreadable
+        File content or None if unreadable/binary
     """
-    try:
-        size_bytes = file_path.stat().st_size
-        max_bytes = max_size_mb * 1024 * 1024
-
-        if size_bytes > max_bytes:
-            return None
-
-        with open(file_path, encoding="utf-8") as f:
-            return f.read()
-    except (OSError, UnicodeDecodeError):
-        return None
+    result = read_utf8_validated(file_path, max_size_bytes=max_size_mb * 1024 * 1024)
+    return result.content
 
 
 def get_file_type(file_path: Path) -> str:

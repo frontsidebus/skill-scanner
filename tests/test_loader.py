@@ -264,6 +264,53 @@ def test_non_utf8_skill_md_raises_error(loader, tmp_path):
         loader.load_skill(skill_dir)
 
 
+def test_binary_skill_md_raises_in_lenient_mode(loader, tmp_path):
+    """Lenient mode must NOT swallow binary SKILL.md — the error must propagate."""
+    skill_dir = tmp_path / "lenient-binary"
+    skill_dir.mkdir()
+
+    (skill_dir / "SKILL.md").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+
+    with pytest.raises(SkillLoadError, match="null bytes"):
+        loader.load_skill(skill_dir, lenient=True)
+
+
+def test_lenient_fallback_binary_md_raises(loader, tmp_path):
+    """Lenient fallback (no SKILL.md, .md files present) must fail on binary .md."""
+    skill_dir = tmp_path / "lenient-binary-fallback"
+    skill_dir.mkdir()
+
+    # No SKILL.md, but a binary README.md
+    (skill_dir / "README.md").write_bytes(b"\x00\x01\x02\x03binary junk")
+
+    with pytest.raises(SkillLoadError, match="not valid UTF-8 text"):
+        loader.load_skill(skill_dir, lenient=True)
+
+
+def test_lenient_fallback_non_utf8_md_raises(loader, tmp_path):
+    """Lenient fallback must fail on Latin-1 .md files."""
+    skill_dir = tmp_path / "lenient-latin1-fallback"
+    skill_dir.mkdir()
+
+    (skill_dir / "README.md").write_bytes(b"# R\xe9sum\xe9\nSome content\n")
+
+    with pytest.raises(SkillLoadError, match="not valid UTF-8 text"):
+        loader.load_skill(skill_dir, lenient=True)
+
+
+def test_oversized_skill_md_raises(tmp_path):
+    """A SKILL.md exceeding the size limit must fail, not OOM."""
+    skill_dir = tmp_path / "oversized-skill"
+    skill_dir.mkdir()
+
+    # 1 KB limit for test speed
+    loader = SkillLoader(max_file_size_bytes=1024)
+    (skill_dir / "SKILL.md").write_text("x" * 2048, encoding="utf-8")
+
+    with pytest.raises(SkillLoadError, match="exceeds maximum size"):
+        loader.load_skill(skill_dir)
+
+
 def test_binary_file_in_package_reclassified(loader, tmp_path):
     """A .py file that is actually binary should be reclassified, not crash."""
     skill_dir = tmp_path / "binary-file-skill"
@@ -300,6 +347,48 @@ def test_non_utf8_file_in_package_reclassified(loader, tmp_path):
     setup = next(f for f in skill.files if f.relative_path == "setup.sh")
     assert setup.file_type == "binary"
     assert setup.content is None
+
+
+def test_read_content_validates_utf8(tmp_path):
+    """SkillFile.read_content() must not bypass UTF-8 validation."""
+    from skill_scanner.core.models import SkillFile
+
+    binary_file = tmp_path / "sneaky.py"
+    binary_file.write_bytes(b"import os\x00\x00hidden")
+
+    sf = SkillFile(
+        path=binary_file,
+        relative_path="sneaky.py",
+        file_type="python",
+        content=None,
+        size_bytes=binary_file.stat().st_size,
+    )
+
+    # read_content() should detect null bytes, reclassify, and return ""
+    result = sf.read_content()
+    assert result == ""
+    assert sf.file_type == "binary"
+
+
+def test_partial_binary_null_after_valid_text(loader, tmp_path):
+    """A file with valid UTF-8 text followed by null bytes must be caught."""
+    skill_dir = tmp_path / "partial-binary"
+    skill_dir.mkdir()
+
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: test\ndescription: test skill\n---\n# Test\n",
+        encoding="utf-8",
+    )
+    # Valid Python followed by null-byte payload
+    (skill_dir / "helper.py").write_bytes(
+        b"def legit():\n    return 42\n\x00\x00\x00HIDDEN_PAYLOAD"
+    )
+
+    skill = loader.load_skill(skill_dir)
+
+    helper = next(f for f in skill.files if f.relative_path == "helper.py")
+    assert helper.file_type == "binary"
+    assert helper.content is None
 
 
 def test_referenced_files_no_false_the_py_from_english_prose(loader):

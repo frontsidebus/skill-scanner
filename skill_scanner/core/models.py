@@ -111,13 +111,21 @@ class SkillFile:
     archive_depth: int = 0
 
     def read_content(self) -> str:
-        """Read file content if not already loaded."""
-        if self.content is None and self.path.exists():
-            try:
-                with open(self.path, encoding="utf-8") as f:
-                    self.content = f.read()
-            except (OSError, UnicodeDecodeError):
-                self.content = ""  # Binary or unreadable file
+        """Read file content if not already loaded.
+
+        Uses UTF-8 validation with null-byte detection.  Files that fail
+        validation are treated as binary (empty string returned) and the
+        file_type is updated accordingly.
+        """
+        if self.content is None and self.file_type != "binary" and self.path.exists():
+            from ..utils.file_utils import read_utf8_validated
+
+            result = read_utf8_validated(self.path)
+            if result.is_binary or result.content is None:
+                self.file_type = "binary"
+                self.content = ""
+            else:
+                self.content = result.content
         return self.content or ""
 
     @property
